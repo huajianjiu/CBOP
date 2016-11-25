@@ -728,7 +728,7 @@ void TrainModel() {
   start = clock();
   for (a = 0; a < num_threads; a++) pthread_create(&pt[a], NULL, TrainModelThread, (void *)a);
   for (a = 0; a < num_threads; a++) pthread_join(pt[a], NULL);
-  fo = fopen(output_file, "wb");
+  fo = fopen(strcat(output_file, ".bin"), "wb");
   fot = fopen(strcat(output_file, ".txt"), "wb");
   if (classes == 0) {
     // Save the word vectors
@@ -864,6 +864,7 @@ int main(int argc, char **argv) {
   if ((i = ArgPos((char *)"-output", argc, argv)) > 0) strcpy(output_file, argv[i + 1]);
   if ((i = ArgPos((char *)"-window", argc, argv)) > 0) window = atoi(argv[i + 1]);
   if ((i = ArgPos((char *)"-sample", argc, argv)) > 0) sample = atof(argv[i + 1]);
+  if ((i = ArgPos((char *)"-para_threshold", argc, argv)) > 0) para_threshold = atof(argv[i + 1]);
   // if ((i = ArgPos((char *)"-hs", argc, argv)) > 0) hs = atoi(argv[i + 1]);
   if ((i = ArgPos((char *)"-negative", argc, argv)) > 0) negative = atoi(argv[i + 1]);
   if ((i = ArgPos((char *)"-threads", argc, argv)) > 0) num_threads = atoi(argv[i + 1]);
