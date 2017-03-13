@@ -1,2 +1,2 @@
-# CBOP
+# SynonymGram
 
