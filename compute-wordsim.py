@@ -20,7 +20,7 @@ def get_vector(w):
 
 if __name__ == "__main__":
     if len(sys.argv)<3:
-        print "Usage: ./compute-wordsim-spearman <WORD_VECTOR_TXT_FILE> <TEST_DATASET> \n \
+        print "Usage: python compute-wordsim.py <WORD_VECTOR_TXT_FILE> <TEST_DATASET> \n \
         where FILE contains human assigned similar scores. I will get the sim via word embeddings and output the spearman correlation"
         exit()
     # read word vectors

@@ -369,8 +369,8 @@ void InitParaphraseScoreTable() {
 
 // Read paraphrases from file. Yuanzhi Ke. 2016
 void ReadParaphrase() {
-  long long a, i = 0;
-  char c;
+  long long i = 0;
+  int a = 0;
   char ppword[MAX_STRING];
   char baseword[MAX_STRING];
 
@@ -380,24 +380,29 @@ void ReadParaphrase() {
     exit(1);
   }
   InitParaphraseTable();
+  InitParaphraseScoreTable();
   while (1) {
     ReadWord(ppword, fin);
     if (feof(fin)) break;
-    if ((!strcmp(ppword, (char *)"</s>")) && (i>0)){
+    a = strcmp(ppword, (char *)"</s>");
+//    printf("i: %d ppword:%s strcmp: %d", i, ppword, a);
+    if (!a){
       i = 0;
-    }
-    if ((strcmp(ppword, (char *)"</s>")) && (i=0)){
+    } else if ((a !=0 ) && (i==0)){
       strcpy(baseword, ppword);
       i++;
-    }
-    if ((strcmp(ppword, (char *)"</s>")) && (i>0)){
-      if (i%2==0)
-        paraphrase_scores[(SearchVocab(baseword)) * PPDB_TABLE_SIZE * + i - 2] = atof(ppword);
-      else if (SearchVocab(baseword) > 0 && SearchVocab(ppword) > 0 && (!(i > PPDB_TABLE_SIZE)))
-        paraphrases[(SearchVocab(baseword)) * PPDB_TABLE_SIZE * + i - 1] = SearchVocab(ppword);
+    } else if ((a !=0 ) && (i>0)){
+      if (i%2==0){
+        paraphrase_scores[(SearchVocab(baseword)) * PPDB_TABLE_SIZE + (i/2) -1] = atof(ppword);
+      }
+      else if (SearchVocab(baseword) > 0 && SearchVocab(ppword) > 0 && (!(i > PPDB_TABLE_SIZE))){
+        paraphrases[(SearchVocab(baseword)) * PPDB_TABLE_SIZE + ((i+1)/2) - 1] = SearchVocab(ppword);
+//        printf("[(SearchVocab(baseword)) * PPDB_TABLE_SIZE + ((i+1)/2) - 1]: %d SearchVocab(ppword): %d SearchVocab(ppword): %d\n", (SearchVocab(baseword)) * PPDB_TABLE_SIZE + ((i+1)/2) - 1, SearchVocab(baseword), SearchVocab(ppword));
+      }
       i++;
     }
   }
+  fclose(fin);
 }
 
 void InitNet() {
