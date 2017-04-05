@@ -381,6 +381,7 @@ void TrainModelThread() {
   int pp_pass = 1;
   long long paraphrase, para_count, para_size;
   long long *paraphrases;
+  char para_word[MAX_STRING];
   PyObject *pArgs, *pTargetWord, *pSentence, *pRetVal;
   real f, g;
   clock_t now;
@@ -427,6 +428,7 @@ void TrainModelThread() {
       word_count = 0;
       last_word_count = 0;
       sentence_length = 0;
+      fseek(fi, 0L, SEEK_SET);
       continue;
     }
     word = sen[sentence_position];
@@ -494,11 +496,13 @@ void TrainModelThread() {
       } else {
         para_size = PyList_Size(pRetVal);
       }
-      paraphrases = (long long *)calloc(para_size+1, sizeof(long long));
+      paraphrases = (long long *)malloc((para_size+1) * sizeof(long long));
       paraphrases[0] = word;
       if (para_size>0){
         for (para_count = 1; para_count < (para_size+1); para_count++) {
-          paraphrases[para_count] = SearchVocab(PyString_AsString(PyList_GetItem(pRetVal, para_count)));
+          strcpy(para_word, PyString_AsString(PyList_GetItem(pRetVal, para_count-1)));
+          paraphrase = SearchVocab(para_word);
+          paraphrases[para_count] = paraphrase;
         }
       }
     }
