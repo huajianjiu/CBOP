@@ -372,14 +372,14 @@ void InitNet() {
 }
 
 void TrainModelThread() {
-  long long a, b, d, cw, word, last_word, wi, sentence_length = 0, sentence_position = 0;
+  long long a, b, d, cw, word, last_word, sentence_length = 0, sentence_position = 0;
   long long word_count = 0, last_word_count = 0, sen[MAX_SENTENCE_LENGTH + 1];
-  long long l1, l2, c, target, label, local_iter = iter;
+  long long l2, c, target, label, local_iter = iter;
   unsigned long long next_random = (long long) rand();
-  int sample_reject = 0;
-  int negative_local = 0;
+//  int sample_reject = 0;
+//  int negative_local = 0;
   int pp_pass = 1;
-  long long paraphrase, para_count, para_size;
+  long long paraphrase, para_count, para_size = 0;
   long long *paraphrases;
   char para_word[MAX_STRING];
   PyObject *pArgs, *pTargetWord, *pSentence, *pRetVal;
@@ -394,7 +394,7 @@ void TrainModelThread() {
       last_word_count = word_count;
       if ((debug_mode > 1)) {
         now=clock();
-        printf("%cAlpha: %f  Progress: %.2f%%  Words/thread/sec: %.2fk  ", 13, alpha,
+        printf("%cAlpha: %f  Progress: %.2f%%  Words/sec: %.2fk  ", 13, alpha,
          word_count_actual / (real)(iter * train_words + 1) * 100,
          word_count_actual / ((real)(now - start + 1) / (real)CLOCKS_PER_SEC * 1000));
         fflush(stdout);
@@ -421,7 +421,7 @@ void TrainModelThread() {
       }
       sentence_position = 0;
     }
-    if (feof(fi) || (word_count > train_words / num_threads)) {
+    if (feof(fi) || (word_count > train_words)) {
       word_count_actual += word_count - last_word_count;
       local_iter--;
       if (local_iter == 0) break;
@@ -490,20 +490,20 @@ void TrainModelThread() {
       PyTuple_SetItem(pArgs, 0, pTargetWord);
       PyTuple_SetItem(pArgs, 1, pSentence);
       pRetVal = PyObject_CallObject(pFunc, pArgs);
-      if (!pRetVal){
+      if ((!pRetVal) || (PyList_Size(pRetVal)==0)) {
         pp_pass = 0;
         para_size = 0;
       } else {
         para_size = PyList_Size(pRetVal);
       }
-      paraphrases = (long long *)malloc((para_size+1) * sizeof(long long));
-      paraphrases[0] = word;
-      if (para_size>0){
-        for (para_count = 1; para_count < (para_size+1); para_count++) {
-          strcpy(para_word, PyString_AsString(PyList_GetItem(pRetVal, para_count-1)));
-          paraphrase = SearchVocab(para_word);
-          paraphrases[para_count] = paraphrase;
-        }
+    }
+    paraphrases = (long long *)malloc((para_size+1) * sizeof(long long));
+    paraphrases[0] = word;
+    if (para_size>0){
+      for (para_count = 1; para_count < (para_size+1); para_count++) {
+        strcpy(para_word, PyString_AsString(PyList_GetItem(pRetVal, para_count-1)));
+        paraphrase = SearchVocab(para_word);
+        paraphrases[para_count] = paraphrase;
       }
     }
 
@@ -561,6 +561,7 @@ void TrainModelThread() {
           }
       }
     }
+    free(paraphrases);
     sentence_position++;
     if (sentence_position >= sentence_length) {
       sentence_length = 0;
@@ -570,16 +571,15 @@ void TrainModelThread() {
   fclose(fi);
   free(neu1);
   free(neu1e);
-  pthread_exit(NULL);
+  printf("free");
 }
 
 void TrainModel() {
-  long a, b, c, d;
+  long a, b;
   FILE *fo, *fot;
-  pthread_attr_t attr;
-  int s;
+//  int s;
 
-  pthread_t *pt = (pthread_t *)malloc(num_threads * sizeof(pthread_t));
+  printf("ok\n");
   printf("Starting training using file %s\n", train_file);
   starting_alpha = alpha;
   if (read_vocab_file[0] != 0) ReadVocab(); else LearnVocabFromTrainFile();
@@ -589,6 +589,7 @@ void TrainModel() {
   if (negative > 0) InitUnigramTable();
   start = clock();
   TrainModelThread();
+  printf("here?\n");
   fo = fopen(strcat(output_file, ".bin"), "wb");
   fot = fopen(strcat(output_file, ".txt"), "wb");
   // Save the word vectors
