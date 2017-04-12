@@ -23,6 +23,11 @@
 #include <pthread.h>
 #include <Python.h>
 
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
+#include <fcntl.h>
+
 #define MAX_STRING 100
 #define EXP_TABLE_SIZE 1000
 #define MAX_EXP 6
@@ -59,6 +64,33 @@ int *table;
 int dropout = 1;
 
 real para_threshold = 3.5;
+
+// a method call the system random number by https://www.zhihu.com/question/20397465
+int GetRandom() {
+    int rnum = 0;
+#if defined _MSC_VER
+#if defined _WIN32_WCE
+    CeGenRandom(sizeof(int), (PBYTE)&rnum);
+#else
+    HCRYPTPROV hProvider = 0;
+    const DWORD dwLength = sizeof(int);
+    BYTE pbBuffer[dwLength] = {};
+    DWORD result =::CryptAcquireContext(&hProvider, 0, 0, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT | CRYPT_SILENT);
+    assert(result);
+    result = ::CryptGenRandom(hProvider, dwLength, pbBuffer);
+    rnum = *(int*)pbBuffer;
+    assert(result);
+    ::CryptReleaseContext(hProvider, 0);
+#endif
+#elif defined __GNUC__
+    int fd = open("/dev/urandom", O_RDONLY);
+    if (fd != -1) {
+        (void) read(fd, (void *) &rnum, sizeof(int));
+        (void) close(fd);
+    }
+#endif
+    return rnum;
+}
 
 void InitUnigramTable() {
   int a, i;
@@ -349,7 +381,10 @@ void ReadVocab() {
 
 void InitNet() {
   long long a, b;
-  unsigned long long next_random = 1;
+//  unsigned long long next_random = 1;
+  unsigned long long next_random = (unsigned long long) GetRandom();
+
+
   a = posix_memalign((void **)&syn0, 128, (long long)vocab_size * layer1_size * sizeof(real));
   if (syn0 == NULL) {printf("Memory allocation failed\n"); exit(1);}
   if (hs) {
@@ -366,6 +401,7 @@ void InitNet() {
   }
   for (a = 0; a < vocab_size; a++) for (b = 0; b < layer1_size; b++) {
     next_random = next_random * (unsigned long long)25214903917 + 11;
+//    next_random = (long long) rand();
     syn0[a * layer1_size + b] = (((next_random & 0xFFFF) / (real)65536) - 0.5) / layer1_size;
   }
   CreateBinaryTree();
@@ -375,7 +411,7 @@ void TrainModelThread() {
   long long a, b, d, cw, word, last_word, sentence_length = 0, sentence_position = 0;
   long long word_count = 0, last_word_count = 0, sen[MAX_SENTENCE_LENGTH + 1];
   long long l2, c, target, label, local_iter = iter;
-  unsigned long long next_random = (long long) rand();
+  unsigned long long next_random = (unsigned long long) GetRandom();
 //  int sample_reject = 0;
 //  int negative_local = 0;
   int pp_pass = 1;
@@ -413,6 +449,7 @@ void TrainModelThread() {
         if (sample > 0) {
           real ran = (sqrt(vocab[word].cn / (sample * train_words)) + 1) * (sample * train_words) / vocab[word].cn;
           next_random = next_random * (unsigned long long)25214903917 + 11;
+//          next_random = (long long) rand();
           if (ran < (next_random & 0xFFFF) / (real)65536) continue;
         }
         sen[sentence_length] = word;
@@ -445,6 +482,7 @@ void TrainModelThread() {
     for (c = 0; c < layer1_size; c++) neu1[c] = 0;
     for (c = 0; c < layer1_size; c++) neu1e[c] = 0;
     next_random = next_random * (unsigned long long)25214903917 + 11;
+//    next_random = (long long) rand();
     b = next_random % window;
 
     // in -> hidden
@@ -535,6 +573,7 @@ void TrainModelThread() {
               label = 1;
             } else {
               next_random = next_random * (unsigned long long) 25214903917 + 11;
+//              next_random = (long long) rand;
               target = table[(next_random >> 16) % table_size];
               if (target == 0) target = next_random % (vocab_size - 1) + 1;
               if (target == word) continue;
@@ -716,6 +755,11 @@ int main(int argc, char **argv) {
   TrainModel();
 
   Py_Finalize();
+
+  free(table);
+  free(expTable);
+  free(vocab);
+  free(vocab_hash);
 
   return 0;
 }
