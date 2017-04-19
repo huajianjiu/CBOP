@@ -628,7 +628,7 @@ void TrainModel() {
   if (negative > 0) InitUnigramTable();
   start = clock();
   TrainModelThread();
-  printf("here?\n");
+//  printf("here?\n");
   fo = fopen(strcat(output_file, ".bin"), "wb");
   fot = fopen(strcat(output_file, ".txt"), "wb");
   // Save the word vectors
