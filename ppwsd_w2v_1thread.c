@@ -451,7 +451,6 @@ void TrainModelThread() {
         if (sample > 0) {
           real ran = (sqrt(vocab[word].cn / (sample * train_words)) + 1) * (sample * train_words) / vocab[word].cn;
           next_random = next_random * (unsigned long long)25214903917 + 11;
-//          next_random = (long long) rand();
           if (ran < (next_random & 0xFFFF) / (real)65536) continue;
         }
         sen[sentence_length] = word;
@@ -463,7 +462,7 @@ void TrainModelThread() {
     if (feof(fi) || (word_count > train_words)) {
       word_count_actual += word_count - last_word_count;
       // show loss
-      printf("loss: %f\n", (float)(sum_loss/(float)loss_count));
+      printf("loss: %f\n", (float)(sum_loss));
       sum_loss = 0.0;
       loss_count = 0.0;
       local_iter--;
@@ -566,6 +565,19 @@ void TrainModelThread() {
             else f = expTable[(int) ((f + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))];
             // 'g' is the gradient multiplied by the learning rate
             g = (1 - vocab[word].code[d] - f) * alpha;
+            //sum loss
+//            printf("f:%f\n", f);
+            if (vocab[word].code[d]==1){
+              sum_loss += (float)(1.0-f);
+            } else if (vocab[word].code[d]==0){
+              sum_loss += (float)f;
+            }
+            if (loss_count == 0){
+              loss_count = 1;
+            } else {
+              sum_loss = (float)(sum_loss / 2);
+            }
+//            printf("sumloss:%f\t losscount:%f\n", sum_loss, loss_count);
             // Propagate errors output -> hidden
             for (c = 0; c < layer1_size; c++) neu1e[c] += g * syn1[c + l2];
             // Learn weights hidden -> output
@@ -593,19 +605,17 @@ void TrainModelThread() {
             else g = (label - expTable[(int) ((f + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))]) * alpha;
             for (c = 0; c < layer1_size; c++) neu1e[c] += g * syn1neg[c + l2];
             for (c = 0; c < layer1_size; c++) syn1neg[c + l2] += g * neu1[c];
-            // we want to compare the corpus model loss. the true samples only.
-            if (d == 0){
-              sum_loss += ((float )1-g);
-              loss_count++;
-            }
             // sum loss
-//            if (label == 0){
-//              sum_loss += (float )g;
-//              loss_count++;
-//            } else {
-//              sum_loss += ((float )1-g);
-//              loss_count++;
-//            }
+            if (label == 0){
+              sum_loss += (float )(label - (g/alpha));
+            } else {
+              sum_loss += (float )(1-(label - (g/alpha)));
+            }
+            if (loss_count == 0){
+              loss_count = 1;
+            } else {
+              sum_loss = (float)(sum_loss / 2);
+            }
           }
         // hidden -> in
         for (a = b; a < window * 2 + 1 - b; a++)
@@ -627,6 +637,127 @@ void TrainModelThread() {
     }
   }
   fclose(fi);
+
+  // test by small corpus
+  FILE *fi_t = fopen("../ukWac/ukwac_subset_10M_processed", "rb");
+  sum_loss=0.0, loss_count=0.0;
+  sentence_length = 0;
+  sentence_position = 0;
+  while (1) {
+    if (sentence_length == 0) {
+      while (1) {
+        word = ReadWordIndex(fi_t);
+        if (feof(fi_t)) break;
+        if (word == -1) continue;
+        word_count++;
+        if (word == 0) break;
+        // The subsampling randomly discards frequent words while keeping the ranking same
+        if (sample > 0) {
+          real ran = (sqrt(vocab[word].cn / (sample * train_words)) + 1) * (sample * train_words) / vocab[word].cn;
+          next_random = next_random * (unsigned long long)25214903917 + 11;
+          if (ran < (next_random & 0xFFFF) / (real)65536) continue;
+        }
+        sen[sentence_length] = word;
+        sentence_length++;
+        if (sentence_length >= MAX_SENTENCE_LENGTH) break;
+      }
+      sentence_position = 0;
+    }
+    if (feof(fi_t)) {
+      // show loss
+      printf("loss: %f\n", (float)(sum_loss));
+      break;
+    }
+    word = sen[sentence_position];
+
+    if (word == -1) continue;
+    for (c = 0; c < layer1_size; c++) neu1[c] = 0;
+    for (c = 0; c < layer1_size; c++) neu1e[c] = 0;
+    next_random = next_random * (unsigned long long)25214903917 + 11;
+    b = next_random % window;
+
+    // in -> hidden
+    cw = 0;
+    for (a = b; a < window * 2 + 1 - b; a++) if (a != window) {
+        c = sentence_position - window + a;
+        if (c < 0) continue;
+        if (c >= sentence_length) continue;
+        last_word = sen[c];
+        if (last_word == -1) continue;
+        for (c = 0; c < layer1_size; c++) neu1[c] += syn0[c + last_word * layer1_size];
+        cw++;
+      }
+
+    if (cw) {
+      for (c = 0; c < layer1_size; c++) neu1[c] /= cw;
+      if (hs)
+        for (d = 0; d < vocab[word].codelen; d++) {
+          f = 0;
+          l2 = vocab[word].point[d] * layer1_size;
+          // Propagate hidden -> output
+          for (c = 0; c < layer1_size; c++) f += neu1[c] * syn1[c + l2];
+          if (f <= -MAX_EXP) continue;
+          else if (f >= MAX_EXP) continue;
+          else f = expTable[(int) ((f + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))];
+          // 'g' is the gradient multiplied by the learning rate
+          g = (1 - vocab[word].code[d] - f) * alpha;
+          if (vocab[word].code[d]==1){
+            sum_loss += (float)(1.0-f);
+          } else if (vocab[word].code[d]==0){
+            sum_loss += (float)f;
+          }
+          if (loss_count == 0){
+            loss_count = 1;
+          } else {
+            sum_loss = (float)(sum_loss / 2);
+          }
+          // Propagate errors output -> hidden
+          for (c = 0; c < layer1_size; c++) neu1e[c] += g * syn1[c + l2];
+          // Learn weights hidden -> output
+          for (c = 0; c < layer1_size; c++) syn1[c + l2] += g * neu1[c];
+        }
+      // NEGATIVE SAMPLING
+      if (negative > 0)
+        for (d = 0; d < negative + 1; d++) {
+          if (d == 0) {
+            target = word;
+            label = 1;
+          } else {
+            next_random = next_random * (unsigned long long) 25214903917 + 11;
+//              next_random = (long long) rand;
+            target = table[(next_random >> 16) % table_size];
+            if (target == 0) target = next_random % (vocab_size - 1) + 1;
+            if (target == word) continue;
+            label = 0;
+          }
+          l2 = target * layer1_size;
+          f = 0;
+          for (c = 0; c < layer1_size; c++) f += neu1[c] * syn1neg[c + l2];
+          if (f > MAX_EXP) g = (label - 1) * alpha;
+          else if (f < -MAX_EXP) g = (label - 0) * alpha;
+          else g = (label - expTable[(int) ((f + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))]) * alpha;
+          for (c = 0; c < layer1_size; c++) neu1e[c] += g * syn1neg[c + l2];
+          for (c = 0; c < layer1_size; c++) syn1neg[c + l2] += g * neu1[c];
+          if (label == 0){
+            sum_loss += (float )(label - (g/alpha));
+          } else {
+            sum_loss += (float )(1-(label - (g/alpha)));
+          }
+          if (loss_count == 0){
+            loss_count = 1;
+          } else {
+            sum_loss = (float)(sum_loss / 2);
+          }
+        }
+    }
+    sentence_position++;
+    if (sentence_position >= sentence_length) {
+      sentence_length = 0;
+      continue;
+    }
+  }
+  fclose(fi_t);
+
   free(neu1);
   free(neu1e);
   printf("free");
@@ -692,8 +823,8 @@ int main(int argc, char **argv) {
     printf("\t-sample <float>\n");
     printf("\t\tSet threshold for occurrence of words. Those that appear with higher frequency in the training data\n");
     printf("\t\twill be randomly down-sampled; default is 1e-3, useful range is (0, 1e-5)\n");
-    // printf("\t-hs <int>\n");
-    // printf("\t\tUse Hierarchical Softmax; default is 0 (not used)\n");
+    printf("\t-hs <int>\n");
+    printf("\t\tUse Hierarchical Softmax; default is 0 (not used)\n");
     printf("\t-negative <int>\n");
     printf("\t\tNumber of negative examples; default is 5, common values are 3 - 10 (0 = not used)\n");
     printf("\t-threads <int>\n");
@@ -731,7 +862,7 @@ int main(int argc, char **argv) {
   if ((i = ArgPos((char *)"-window", argc, argv)) > 0) window = atoi(argv[i + 1]);
   if ((i = ArgPos((char *)"-sample", argc, argv)) > 0) sample = atof(argv[i + 1]);
 //  if ((i = ArgPos((char *)"-para_threshold", argc, argv)) > 0) para_threshold = atof(argv[i + 1]);
-  // if ((i = ArgPos((char *)"-hs", argc, argv)) > 0) hs = atoi(argv[i + 1]);
+  if ((i = ArgPos((char *)"-hs", argc, argv)) > 0) hs = atoi(argv[i + 1]);
   if ((i = ArgPos((char *)"-negative", argc, argv)) > 0) negative = atoi(argv[i + 1]);
   if ((i = ArgPos((char *)"-threads", argc, argv)) > 0) num_threads = atoi(argv[i + 1]);
   if ((i = ArgPos((char *)"-iter", argc, argv)) > 0) iter = atoi(argv[i + 1]);
