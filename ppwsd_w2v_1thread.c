@@ -551,7 +551,9 @@ void TrainModelThread() {
     }
 
     for (para_count = 0; para_count < para_size+1; para_count++) {
-      word = paraphrases[para_count];
+//    for (para_count = 0; para_count < 1; para_count++) {  //for no lexicon group
+      if (paraphrases[para_count] == -1) continue;
+      else word = paraphrases[para_count];
       if (cw) {
         for (c = 0; c < layer1_size; c++) neu1[c] /= cw;
         if (hs)
@@ -897,6 +899,7 @@ int main(int argc, char **argv) {
     return -1;
   }
   pFunc = PyDict_GetItemString(pDict, "get_paraphrases");
+//  pFunc = PyDict_GetItemString(pDict, "get_paraphrases_no_filter"); //for no filter group
   if(!pFunc || !PyCallable_Check(pFunc)){
     printf("cannot find function 'get_paraphrases' in getParaphrasesWNWSD.py");
     return -1;
