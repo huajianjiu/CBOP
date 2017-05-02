@@ -413,7 +413,7 @@ void TestModel(real *neu1, real *neu1e){
   long long l2, c, target, label;
   unsigned long long next_random = (unsigned long long) GetRandom();
   real f, g;
-  float sum_loss=0.0, loss_count=0.0;
+  float sum_loss=0.0, loss_count=0.0, sum_logp=0.0;
 
   // test by small corpus
   FILE *fi_t = fopen("../ukWac/ukwac_subset_10M_processed", "rb");
@@ -440,6 +440,7 @@ void TestModel(real *neu1, real *neu1e){
     if (feof(fi_t)) {
       // show loss
       printf("test_loss: %f\n", (float)(sum_loss));
+      printf("test_perplexity: %f\n", (float)(sum_logp / word_count));
       break;
     }
     word = sen[sentence_position];
@@ -479,8 +480,10 @@ void TestModel(real *neu1, real *neu1e){
           //sum loss
           if (vocab[word].code[d]==1){
             sum_loss += log((float)(1.0-f));
+            sum_logp += log((float)(1.0-f));
           } else if (vocab[word].code[d]==0){
             sum_loss += log((float)f);
+            sum_logp += log((float)f);
           }
           if (loss_count == 0){
             loss_count = 1;
@@ -551,7 +554,7 @@ void TrainModelThread() {
   real *neu1 = (real *)calloc(layer1_size, sizeof(real));
   real *neu1e = (real *)calloc(layer1_size, sizeof(real));
   FILE *fi = fopen(train_file, "rb");
-  float sum_loss=0.0, loss_count=0.0;
+  float sum_loss=0.0, loss_count=0.0, sum_logp=0.0;
 
   while (1) {
     if (word_count - last_word_count > 10000) {
@@ -590,9 +593,11 @@ void TrainModelThread() {
       word_count_actual += word_count - last_word_count;
       // show loss
       printf("\ntrain_loss: %f\n", (float)(sum_loss));
+      printf("train_perplexity: %f\n", (float)(sum_logp / word_count));
       TestModel(neu1, neu1e);
       sum_loss = 0.0;
       loss_count = 0.0;
+      sum_logp = 0.0;
       local_iter--;
       if (local_iter == 0) break;
       word_count = 0;
@@ -698,8 +703,10 @@ void TrainModelThread() {
             //sum loss
             if (vocab[word].code[d]==1){
               sum_loss += log((float)(1.0-f));
+              sum_logp += log((float)(1.0-f));
             } else if (vocab[word].code[d]==0){
               sum_loss += log((float)f);
+              sum_logp += log((float)f);
             }
             if (loss_count == 0){
               loss_count = 1;
