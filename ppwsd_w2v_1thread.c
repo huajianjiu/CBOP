@@ -414,7 +414,6 @@ void TestModel(real *neu1, real *neu1e){
   unsigned long long next_random = (unsigned long long) GetRandom();
   real f, g;
   float sum_loss=0.0, sum_logp=0.0;
-//  float loss_count=0.0;
 
   // test by small corpus
   FILE *fi_t = fopen("../ukWac/ukwac_subset_10M_processed", "rb");
@@ -486,11 +485,6 @@ void TestModel(real *neu1, real *neu1e){
 //            sum_loss += log((float)f);
             sum_logp += log((float)f);
           }
-//          if (loss_count == 0){
-//            loss_count = 1;
-//          } else {
-//            sum_loss = (float)(sum_loss / 2);
-//          }
           // Propagate errors output -> hidden
           for (c = 0; c < layer1_size; c++) neu1e[c] += g * syn1[c + l2];
           // Learn weights hidden -> output
@@ -551,7 +545,6 @@ void TrainModelThread() {
   real *neu1e = (real *)calloc(layer1_size, sizeof(real));
   FILE *fi = fopen(train_file, "rb");
   float sum_loss=0.0, sum_logp=0.0;
-//  float loss_count=0.0;
 
   while (1) {
     if (word_count - last_word_count > 10000) {
@@ -593,7 +586,6 @@ void TrainModelThread() {
       printf("train_perplexity: %f\n", (float)exp(0.0-(sum_logp / (word_count * (1+negative)))));
       TestModel(neu1, neu1e);
       sum_loss = 0.0;
-      loss_count = 0.0;
       sum_logp = 0.0;
       local_iter--;
       if (local_iter == 0) break;
@@ -705,11 +697,6 @@ void TrainModelThread() {
 //              sum_loss += log((float)f);
               sum_logp += log((float)f);
             }
-//            if (loss_count == 0){
-//              loss_count = 1;
-//            } else {
-//              sum_loss = (float)(sum_loss / 2);
-//            }
             // Propagate errors output -> hidden
             for (c = 0; c < layer1_size; c++) neu1e[c] += g * syn1[c + l2];
             // Learn weights hidden -> output
