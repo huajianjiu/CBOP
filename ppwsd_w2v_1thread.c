@@ -440,7 +440,7 @@ void TestModel(real *neu1, real *neu1e){
     if (feof(fi_t)) {
       // show loss
 //      printf("test_loss: %f\n", (float)(sum_loss));
-      printf("train_perplexity: %f\n", (float)exp(0.0-(sum_logp / (word_count * (1+negative)))));
+      printf("test_perplexity: %f\n", (float)exp(0.0-(sum_logp / (word_count * (1+negative)))));
       break;
     }
     word = sen[sentence_position];
@@ -583,7 +583,7 @@ void TrainModelThread() {
       word_count_actual += word_count - last_word_count;
       // show loss
 //      printf("\ntrain_loss: %f\n", (float)(sum_loss));
-      printf("train_perplexity: %f\n", (float)exp(0.0-(sum_logp / (word_count * (1+negative)))));
+      printf("\ntrain_perplexity: %f\n", (float)exp(0.0-(sum_logp / (word_count * (1+negative)))));
       TestModel(neu1, neu1e);
       sum_loss = 0.0;
       sum_logp = 0.0;
