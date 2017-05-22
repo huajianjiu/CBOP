@@ -223,13 +223,34 @@ class EwcWord2vec(Word2Vec):
 
         return trained_word_count
 
-    def calculate_fisher(self, sentences, filter_power=0.75):
-        # TODO: calculate fisher information using the frequent words. for example, if power is 0.75, \
-        # TODO: the corpus size is 1000, the most 750 frequent words are used.
+    def calculate_fisher(self, sentences, class_num=1, sample_num=200):
+        # TODO: calculate fisher information using the frequent words.
+        # TODO: for example, if power is 0.75, the corpus size is 1000, the most 750 frequent words are used.
+        # TODO: sample for one_class(A word) or for all words
+        # TODO: when sample one class, use the distribution the same as the the ns, i.e. w.r.t. tf*power
         # the vocab is sorted if this is no revision of the gensim implementation. May 2017.
-        vocab_size = len(self.wv.vocab)
-        max_acceptable = vocab_size*filter_power
-        
+        # For hs:
+        # 1. randomly select a class(a word)
+        # 2. get a sample context from the corpus
+        # 3. get log likelihood of the probability of the code of the selected class (word) given the sample context
+        #    (the sum of the log likelihood of each code number)
+        # 4. get the squared gradient vector in the directions of each parameter(every embedding, every theta)
+        # 5. repeat 2-4 until samples number reach sample_num
+        # 6. average the squared gradient vector in the directions of each parameter
+        # For ns:
+        # 1. randomly select zero or one
+        # 2. get a sample context from the corpus
+        # 3. get a random word in the sample context
+        # 4. get the squared gradient vector in the directions of each parameter(every embedding, every theta)
+        # 5. repeat 2-4 until samples number reach sample_num
+        # 6. average the squared gradient vector in the directions of each parameter
+
+        if class_num > 1:
+            logger.warning("sample fisher information for multiple classes is uncompleted.")
+            return 0
+
+        w_ind = self.cum_table.searchsorted(self.random.randint(self.cum_table[-1]))
+
         pass
 
     def _do_train_job(self, sentences, alpha, inits):
