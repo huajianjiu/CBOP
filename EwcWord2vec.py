@@ -201,14 +201,27 @@ def fisher_batch_sg(model, sentences, work=None):
         word_count += len(word_vocabs)
     return word_count, accum_count
 
+
 def fisher_batch_cbow(model, sentences, work=None, neu1=None):
-    # TODO: accumulate fisher information
-    # TODO: remember to average the fisher information
-    # TODO: remember to report accumulate times
+    # accumulate fisher information
+    # remember to report accumulate times
     word_count = 0
     accum_count = 0
-
+    for sentence in sentences:
+        word_vocabs = [model.wv.vocab[w] for w in sentence if w in model.wv.vocab and
+                       model.wv.vocab[w].sample_int > model.random.rand() * 2 ** 32]
+        for pos, word in enumerate(word_vocabs):
+            reduced_window = model.random.randint(model.window)  # `b` in the original word2vec code
+            start = max(0, pos - model.window + reduced_window)
+            window_pos = enumerate(word_vocabs[start:(pos + model.window + 1 - reduced_window)], start)
+            word2_indices = [word2.index for pos2, word2 in window_pos if (word2 is not None and pos2 != pos)]
+            l1 = np_sum(model.wv.syn0[word2_indices], axis=0)  # 1 x vector_size
+            if word2_indices and model.cbow_mean:
+                l1 /= len(word2_indices)
+            accum_count += fisher_cbow_pair(model, word, word2_indices, l1)
+        word_count += len(word_vocabs)
     return word_count, accum_count
+
 
 def fisher_sg_pair(model, word, context_index, learn_vectors=True, learn_hidden=True,
                    context_vectors=None, context_locks=None):
