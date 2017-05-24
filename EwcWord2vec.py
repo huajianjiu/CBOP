@@ -1,5 +1,42 @@
-from gensim.models.word2vec import *
-import numpy as np
+from __future__ import division  # py3 "true division"
+
+import logging
+import sys
+import os
+import heapq
+from timeit import default_timer
+from copy import deepcopy
+from collections import defaultdict
+import threading
+import itertools
+import warnings
+
+from gensim.utils import keep_vocab_item, call_on_class_only
+from gensim.models.keyedvectors import KeyedVectors, Vocab
+
+try:
+    from queue import Queue, Empty
+except ImportError:
+    from Queue import Queue, Empty
+
+from numpy import exp, log, dot, zeros, outer, random, dtype, float32 as REAL,\
+    double, uint32, seterr, array, uint8, vstack, fromstring, sqrt, newaxis,\
+    ndarray, empty, sum as np_sum, prod, ones, ascontiguousarray, vstack, logaddexp, zeros_like
+
+from scipy.special import expit
+
+from gensim import utils, matutils  # utility fnc for pickling, common scipy operations etc
+from gensim.corpora.dictionary import Dictionary
+from six import iteritems, itervalues, string_types
+from six.moves import xrange
+from types import GeneratorType
+from scipy import stats
+
+from gensim.models.word2vec import score_sg_pair, score_cbow_pair, Word2Vec
+
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(filename='example.log',level=logging.DEBUG)
 
 # TODO: check whether the ewc train_sg_pair and train_cbow_pair is used.
 
@@ -69,7 +106,7 @@ def train_batch_cbow(model, sentences, alpha, work=None, neu1=None):
 def train_sg_pair(model, word, context_index, alpha, learn_vectors=True, learn_hidden=True,
                   context_vectors=None, context_locks=None):
     # train_sg_pair with ewc loss
-    print ("ewc train_sg_pair")
+    # logging.info("ewc train_sg_pair")
     if context_vectors is None:
         context_vectors = model.wv.syn0
     if context_locks is None:
@@ -92,7 +129,7 @@ def train_sg_pair(model, word, context_index, alpha, learn_vectors=True, learn_h
         if learn_hidden:
             model.syn1[predict_word.point] += outer(ga, l1)  # learn hidden -> output
             if model.fisher_syn1 is not None:
-                print ("add ewc gradient for syn1")
+                # logger.info ("add ewc gradient for syn1")
                 model.syn1[predict_word.point] += float(0) - \
                                                   alpha * model.lam * outer(model.fisher_syn1[predict_word.point],
                                                                             (l2a - model.star_syn1[predict_word.point]))
@@ -111,7 +148,7 @@ def train_sg_pair(model, word, context_index, alpha, learn_vectors=True, learn_h
         if learn_hidden:
             model.syn1neg[word_indices] += outer(gb, l1)  # learn hidden -> output
             if model.fisher_syn1neg is not None:
-                print ("add ewc gradient for syn1neg")
+                # logger.info ("add ewc gradient for syn1neg")
                 model.syn1neg[word_indices] += float(0) - \
                                                alpha * model.lam * outer(model.fisher_syn1neg[word_indices],
                                                                          (l2b - model.star_syn1neg[word_indices]))
@@ -119,7 +156,7 @@ def train_sg_pair(model, word, context_index, alpha, learn_vectors=True, learn_h
 
     if learn_vectors:
         if model.fisher_syn0 is not None:
-            print ("add ewc gradient for syn0")
+            # logger.info ("add ewc gradient for syn0")
             star_l1 = model.star_syn0[context_index]
             l1 += lock_factor * \
                   (neu1e - alpha * model.lam * outer(model.fisher_syn0[context_index],
@@ -132,7 +169,7 @@ def train_sg_pair(model, word, context_index, alpha, learn_vectors=True, learn_h
 def train_cbow_pair(model, word, input_word_indices, l1, alpha, learn_vectors=True, learn_hidden=True):
     neu1e = zeros(l1.shape)
     # train_cbow_pair with ewc loss
-    print ("ewc train_cbow_pair")
+    # logging.info("ewc train_cbow_pair")
     if model.hs:
         l2a = model.syn1[word.point]  # 2d matrix, codelen x layer1_size
         fa = expit(dot(l1, l2a.T))  # propagate hidden -> output
@@ -140,7 +177,6 @@ def train_cbow_pair(model, word, input_word_indices, l1, alpha, learn_vectors=Tr
         if learn_hidden:
             model.syn1[word.point] += outer(ga, l1)  # learn hidden -> output
             if model.fisher_syn1 is not None:
-                print ("add ewc gradient for syn1")
                 model.syn1[word.point] += float(0) - \
                                           alpha * model.lam * outer(model.fisher_syn1[word.point],
                                                                     (l2a - model.star_syn1[word.point]))
@@ -159,7 +195,6 @@ def train_cbow_pair(model, word, input_word_indices, l1, alpha, learn_vectors=Tr
         if learn_hidden:
             model.syn1neg[word_indices] += outer(gb, l1)  # learn hidden -> output
             if model.fisher_syn1neg is not None:
-                print ("add ewc gradient for syn1neg")
                 model.syn1neg[word_indices] += float(0) - \
                                                alpha * model.lam * outer(model.fisher_syn1neg[word_indices],
                                                                          (l2b - model.star_syn1neg[word_indices]))
@@ -170,7 +205,6 @@ def train_cbow_pair(model, word, input_word_indices, l1, alpha, learn_vectors=Tr
         if not model.cbow_mean and input_word_indices:
             neu1e /= len(input_word_indices)
         if model.fisher_syn0 is not None:
-            print ("add ewc gradient for syn0")
             for i in input_word_indices:
                 model.wv.syn0[i] += model.syn0_lockf[i] * \
                                     (neu1e - alpha * model.lam * outer(model.fisher_syn0[i],
@@ -348,13 +382,204 @@ class EwcWord2vec(Word2Vec):
         # The train override the train of Word2Vec and will be called in the super().__init__
         # print ("train!")
         # print (hasattr(self, "syn1"))
-        # get fisher information at the end
-        # hope the overrided _do_train_job will be used
-        trained_word_count = \
-            super(EwcWord2vec, self).train(sentences, total_examples=total_examples, total_words=total_words,
-                                           epochs=epochs, start_alpha=start_alpha, end_alpha=end_alpha,
-                                           word_count=word_count,
-                                           queue_factor=queue_factor, report_delay=report_delay)
+        # start of training
+        # TODO: if we use the parent's train, the overrided train functions outside are not used
+        # trained_word_count = \
+        #     super(EwcWord2vec, self).train(sentences, total_examples=total_examples, total_words=total_words,
+        #                                    epochs=epochs, start_alpha=start_alpha, end_alpha=end_alpha,
+        #                                    word_count=word_count,
+        #                                    queue_factor=queue_factor, report_delay=report_delay)
+        if (self.model_trimmed_post_training):
+            raise RuntimeError("Parameters for training were discarded using model_trimmed_post_training method")
+        if FAST_VERSION < 0:
+            warnings.warn("C extension not loaded for Word2Vec, training will be slow. "
+                          "Install a C compiler and reinstall gensim for fast training.")
+            self.neg_labels = []
+            if self.negative > 0:
+                # precompute negative labels optimization for pure-python training
+                self.neg_labels = zeros(self.negative + 1)
+                self.neg_labels[0] = 1.
+
+        logger.info(
+            "Overrided Training.training model with %i workers on %i vocabulary and %i features, "
+            "using sg=%s hs=%s sample=%s negative=%s window=%s",
+            self.workers, len(self.wv.vocab), self.layer1_size, self.sg,
+            self.hs, self.sample, self.negative, self.window)
+
+        if not self.wv.vocab:
+            raise RuntimeError("you must first build vocabulary before training the model")
+        if not len(self.wv.syn0):
+            raise RuntimeError("you must first finalize vocabulary before training the model")
+
+        if not hasattr(self, 'corpus_count'):
+            raise ValueError(
+                "The number of sentences in the training corpus is missing. Did you load the model via KeyedVectors.load_word2vec_format?"
+                "Models loaded via load_word2vec_format don't support further training. "
+                "Instead start with a blank model, scan_vocab on the new corpus, intersect_word2vec_format with the old model, then train.")
+
+        if total_words is None and total_examples is None:
+            raise ValueError("You must specify either total_examples or total_words, for proper alpha and progress calculations. The usual value is total_examples=model.corpus_count.")
+        if epochs is None:
+            raise ValueError("You must specify an explict epochs count. The usual value is epochs=model.iter.")
+        start_alpha = start_alpha or self.alpha
+        end_alpha = end_alpha or self.min_alpha
+
+        job_tally = 0
+
+        if epochs > 1:
+            sentences = utils.RepeatCorpusNTimes(sentences, epochs)
+            total_words = total_words and total_words * epochs
+            total_examples = total_examples and total_examples * epochs
+
+        def worker_loop():
+            """Train the model, lifting lists of sentences from the job_queue."""
+            work = matutils.zeros_aligned(self.layer1_size, dtype=REAL)  # per-thread private work memory
+            neu1 = matutils.zeros_aligned(self.layer1_size, dtype=REAL)
+            jobs_processed = 0
+            while True:
+                job = job_queue.get()
+                if job is None:
+                    progress_queue.put(None)
+                    break  # no more jobs => quit this worker
+                sentences, alpha = job
+                tally, raw_tally = self._do_train_job(sentences, alpha, (work, neu1))
+                progress_queue.put((len(sentences), tally, raw_tally))  # report back progress
+                jobs_processed += 1
+            logger.debug("worker exiting, processed %i jobs", jobs_processed)
+
+        def job_producer():
+            """Fill jobs queue using the input `sentences` iterator."""
+            job_batch, batch_size = [], 0
+            pushed_words, pushed_examples = 0, 0
+            next_alpha = start_alpha
+            if next_alpha > self.min_alpha_yet_reached:
+                logger.warning(
+                    "Effective 'alpha' higher than previous training cycles"
+                )
+            self.min_alpha_yet_reached = next_alpha
+            job_no = 0
+
+            for sent_idx, sentence in enumerate(sentences):
+                sentence_length = self._raw_word_count([sentence])
+
+                # can we fit this sentence into the existing job batch?
+                if batch_size + sentence_length <= self.batch_words:
+                    # yes => add it to the current job
+                    job_batch.append(sentence)
+                    batch_size += sentence_length
+                else:
+                    # no => submit the existing job
+                    logger.debug(
+                        "queueing job #%i (%i words, %i sentences) at alpha %.05f",
+                        job_no, batch_size, len(job_batch), next_alpha)
+                    job_no += 1
+                    job_queue.put((job_batch, next_alpha))
+
+                    # update the learning rate for the next job
+                    if end_alpha < next_alpha:
+                        if total_examples:
+                            # examples-based decay
+                            pushed_examples += len(job_batch)
+                            progress = 1.0 * pushed_examples / total_examples
+                        else:
+                            # words-based decay
+                            pushed_words += self._raw_word_count(job_batch)
+                            progress = 1.0 * pushed_words / total_words
+                        next_alpha = start_alpha - (start_alpha - end_alpha) * progress
+                        next_alpha = max(end_alpha, next_alpha)
+
+                    # add the sentence that didn't fit as the first item of a new job
+                    job_batch, batch_size = [sentence], sentence_length
+
+            # add the last job too (may be significantly smaller than batch_words)
+            if job_batch:
+                logger.debug(
+                    "queueing job #%i (%i words, %i sentences) at alpha %.05f",
+                    job_no, batch_size, len(job_batch), next_alpha)
+                job_no += 1
+                job_queue.put((job_batch, next_alpha))
+
+            if job_no == 0 and self.train_count == 0:
+                logger.warning(
+                    "train() called with an empty iterator (if not intended, "
+                    "be sure to provide a corpus that offers restartable "
+                    "iteration = an iterable)."
+                )
+
+            # give the workers heads up that they can finish -- no more work!
+            for _ in xrange(self.workers):
+                job_queue.put(None)
+            logger.debug("job loop exiting, total %i jobs", job_no)
+
+        # buffer ahead only a limited number of jobs.. this is the reason we can't simply use ThreadPool :(
+        job_queue = Queue(maxsize=queue_factor * self.workers)
+        progress_queue = Queue(maxsize=(queue_factor + 1) * self.workers)
+
+        workers = [threading.Thread(target=worker_loop) for _ in xrange(self.workers)]
+        unfinished_worker_count = len(workers)
+        workers.append(threading.Thread(target=job_producer))
+
+        for thread in workers:
+            thread.daemon = True  # make interrupting the process with ctrl+c easier
+            thread.start()
+
+        example_count, trained_word_count, raw_word_count = 0, 0, word_count
+        start, next_report = default_timer() - 0.00001, 1.0
+
+        while unfinished_worker_count > 0:
+            report = progress_queue.get()  # blocks if workers too slow
+            if report is None:  # a thread reporting that it finished
+                unfinished_worker_count -= 1
+                logger.info("worker thread finished; awaiting finish of %i more threads", unfinished_worker_count)
+                continue
+            examples, trained_words, raw_words = report
+            job_tally += 1
+
+            # update progress stats
+            example_count += examples
+            trained_word_count += trained_words  # only words in vocab & sampled
+            raw_word_count += raw_words
+
+            # log progress once every report_delay seconds
+            elapsed = default_timer() - start
+            if elapsed >= next_report:
+                if total_examples:
+                    # examples-based progress %
+                    logger.info(
+                        "PROGRESS: at %.2f%% examples, %.0f words/s, in_qsize %i, out_qsize %i",
+                        100.0 * example_count / total_examples, trained_word_count / elapsed,
+                        utils.qsize(job_queue), utils.qsize(progress_queue))
+                else:
+                    # words-based progress %
+                    logger.info(
+                        "PROGRESS: at %.2f%% words, %.0f words/s, in_qsize %i, out_qsize %i",
+                        100.0 * raw_word_count / total_words, trained_word_count / elapsed,
+                        utils.qsize(job_queue), utils.qsize(progress_queue))
+                next_report = elapsed + report_delay
+
+        # all done; report the final stats
+        elapsed = default_timer() - start
+        logger.info(
+            "training on %i raw words (%i effective words) took %.1fs, %.0f effective words/s",
+            raw_word_count, trained_word_count, elapsed, trained_word_count / elapsed)
+        if job_tally < 10 * self.workers:
+            logger.warning(
+                "under 10 jobs per worker: consider setting a smaller `batch_words' for smoother alpha decay"
+            )
+
+        # check that the input corpus hasn't changed during iteration
+        if total_examples and total_examples != example_count:
+            logger.warning(
+                "supplied example count (%i) did not equal expected count (%i)", example_count, total_examples
+            )
+        if total_words and total_words != raw_word_count:
+            logger.warning(
+                "supplied raw word count (%i) did not equal expected count (%i)", raw_word_count, total_words
+            )
+
+        self.train_count += 1  # number of times train() has been called
+        self.total_train_time += elapsed
+        self.clear_sims()
 
         # start of the part for ewc:
         # get star parameters
@@ -377,11 +602,11 @@ class EwcWord2vec(Word2Vec):
 
         job_tally = 0
 
-        self.fisher_syn0 = np.zeros_like(self.wv.syn0)
-        self.fisher_syn1 = np.zeros_like(self.syn1)
-        self.fisher_syn1neg = np.zeros_like(self.fisher_syn1neg)
+        self.fisher_syn0 = zeros_like(self.wv.syn0)
+        self.fisher_syn1 = zeros_like(self.syn1)
+        self.fisher_syn1neg = zeros_like(self.fisher_syn1neg)
 
-        print("Start to accumulate Fisher information.")
+        # print("Start to accumulate Fisher information.")
 
         logger.info("Start to accumulate Fisher information.")
 
@@ -529,7 +754,7 @@ class EwcWord2vec(Word2Vec):
         Train a single batch of sentences. Return 2-tuple `(effective word count after
         ignoring unknown words and sentence length trimming, total word count)`.
         """
-        print("ewc do_train_job")
+        logger.info("ewc do_train_job")
         work, neu1 = inits
         tally = 0
         if self.sg:
@@ -539,7 +764,7 @@ class EwcWord2vec(Word2Vec):
         return tally, self._raw_word_count(sentences)
 
     def _do_fisher_job(self, sentences, inits):
-        print("ewc do_fisher_job")
+        logger.info("ewc do_fisher_job")
         work, neu1 = inits
         tally = 0
         accum = 0
