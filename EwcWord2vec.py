@@ -337,7 +337,7 @@ class EwcWord2vec(Word2Vec):
         logger.info("collecting all words and their counts from external vocab file")
         vocab = self.raw_vocab
         with open(self.vocabfile, "r") as f:
-            for line in f.readlines:
+            for line in f.readlines():
                 vocab[line.split(" ")[0]] = line.split(" ")[1]
         self.raw_vocab = vocab
 
