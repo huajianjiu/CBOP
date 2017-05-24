@@ -338,7 +338,7 @@ class EwcWord2vec(Word2Vec):
         vocab = self.raw_vocab
         with open(self.vocabfile, "r") as f:
             for line in f.readlines():
-                vocab[line.split(" ")[0]] = line.split(" ")[1]
+                vocab[line.split(" ")[0]] = int(line.split(" ")[1])
         self.raw_vocab = vocab
 
     def train(self, sentences, total_examples=None, total_words=None,
