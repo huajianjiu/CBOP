@@ -1,4 +1,5 @@
 from gensim.models.word2vec import *
+import numpy as np
 
 # TODO: check whether the ewc train_sg_pair and train_cbow_pair is used.
 
@@ -225,9 +226,47 @@ def fisher_batch_cbow(model, sentences, work=None, neu1=None):
 
 def fisher_sg_pair(model, word, context_index, learn_vectors=True, learn_hidden=True,
                    context_vectors=None, context_locks=None):
-    # TODO: accumulate fisher information
-    # TODO: remember to report accumulate times
+    # accumulate fisher information
+    # remember to report accumulate times
+    # I do not use lock here for fisher info, hope it is ok
     accum_count = 0
+
+    if context_vectors is None:
+        context_vectors = model.wv.syn0
+
+    if word not in model.wv.vocab:
+        return
+    predict_word = model.wv.vocab[word]  # target word (NN output)
+
+    l1 = context_vectors[context_index]  # input word (NN input/projection layer)
+
+    neu1e = zeros(l1.shape)
+
+    if model.hs:
+        # work on the entire tree at once, to push as much work into numpy's C routines as possible (performance)
+        l2a = deepcopy(model.syn1[predict_word.point])  # 2d matrix, codelen x layer1_size
+        fa = expit(dot(l1, l2a.T))  # propagate hidden -> output
+        ga = (1 - predict_word.code - fa)  # vector of error gradients multiplied by the learning rate
+        if learn_hidden:
+            model.fisher_syn1[predict_word.point] += (outer(ga, l1))**2  # accumulate fisher info
+        neu1e += dot(ga, l2a)  # save error
+
+    if model.negative:
+        # use this word (label = 1) + `negative` other random words not from this sentence (label = 0)
+        word_indices = [predict_word.index]
+        while len(word_indices) < model.negative + 1:
+            w = model.cum_table.searchsorted(model.random.randint(model.cum_table[-1]))
+            if w != predict_word.index:
+                word_indices.append(w)
+        l2b = model.syn1neg[word_indices]  # 2d matrix, k+1 x layer1_size
+        fb = expit(dot(l1, l2b.T))  # propagate hidden -> output
+        gb = (model.neg_labels - fb)  # vector of error gradients multiplied by the learning rate
+        if learn_hidden:
+            model.fisher_syn1neg[word_indices] += outer(gb, l1)**2  # accumulate fisher info
+        neu1e += dot(gb, l2b)  # save error
+
+    model.fisher_syn0[context_index] += neu1e**2
+    accum_count += 1
 
     return accum_count
 
@@ -236,7 +275,40 @@ def fisher_cbow_pair(model, word, input_word_indices, l1, learn_vectors=True, le
     neu1e = zeros(l1.shape)
     # TODO: accumulate fisher information
     # TODO: remember to report accumulate times
+    # I do not use lock here for fisher info, hope it is ok
     accum_count = 0
+
+    neu1e = zeros(l1.shape)
+
+    if model.hs:
+        l2a = model.syn1[word.point]  # 2d matrix, codelen x layer1_size
+        fa = expit(dot(l1, l2a.T))  # propagate hidden -> output
+        ga = (1. - word.code - fa)  # vector of error gradients multiplied by the learning rate
+        if learn_hidden:
+            model.fisher_syn1[word.point] += outer(ga, l1)**2  # learn hidden -> output
+        neu1e += dot(ga, l2a)  # save error
+
+    if model.negative:
+        # use this word (label = 1) + `negative` other random words not from this sentence (label = 0)
+        word_indices = [word.index]
+        while len(word_indices) < model.negative + 1:
+            w = model.cum_table.searchsorted(model.random.randint(model.cum_table[-1]))
+            if w != word.index:
+                word_indices.append(w)
+        l2b = model.syn1neg[word_indices]  # 2d matrix, k+1 x layer1_size
+        fb = expit(dot(l1, l2b.T))  # propagate hidden -> output
+        gb = (model.neg_labels - fb)  # vector of error gradients multiplied by the learning rate
+        if learn_hidden:
+            model.fisher_syn1neg[word_indices] += outer(gb, l1)**2  # learn hidden -> output
+        neu1e += dot(gb, l2b)  # save error
+
+    if learn_vectors:
+        # learn input -> hidden, here for all words in the window separately
+        if not model.cbow_mean and input_word_indices:
+            neu1e /= len(input_word_indices)
+        for i in input_word_indices:
+            model.fisher_syn0[i] += (neu1e**2)
+    accum_count += 1
 
     return accum_count
 
@@ -304,6 +376,10 @@ class EwcWord2vec(Word2Vec):
         # Notice: use the all samples to cover the whole embedding layer as more as possible
 
         job_tally = 0
+
+        self.fisher_syn0 = np.zeros_like(self.wv.syn0)
+        self.fisher_syn1 = np.zeros_like(self.syn1)
+        self.fisher_syn1neg = np.zeros_like(self.fisher_syn1neg)
 
         print("Start to accumulate Fisher information.")
 
