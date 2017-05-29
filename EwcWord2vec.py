@@ -5,6 +5,7 @@ import sys
 import os
 import heapq
 from timeit import default_timer
+from time import clock
 from copy import deepcopy
 from collections import defaultdict
 import threading
@@ -19,11 +20,9 @@ try:
 except ImportError:
     from Queue import Queue, Empty
 
-from numpy import exp, log, dot, zeros, outer, random, dtype, float32 as REAL,\
-    double, uint32, seterr, array, uint8, vstack, fromstring, sqrt, newaxis,\
+from numpy import exp, log, dot, zeros, outer, random, dtype, float32 as REAL, \
+    double, uint32, seterr, array, uint8, vstack, fromstring, sqrt, newaxis, \
     ndarray, empty, sum as np_sum, prod, ones, ascontiguousarray, vstack, logaddexp, zeros_like
-
-from scipy.special import expit
 
 from gensim import utils, matutils  # utility fnc for pickling, common scipy operations etc
 from gensim.corpora.dictionary import Dictionary
@@ -34,11 +33,14 @@ from scipy import stats
 
 from gensim.models.word2vec import score_sg_pair, score_cbow_pair, Word2Vec
 
+import theano
+import theano.tensor as Tensor
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(filename='example.log',level=logging.DEBUG)
+logging.basicConfig(filename='example.log', level=logging.DEBUG)
 
-# TODO: check whether the ewc train_sg_pair and train_cbow_pair is used.
+# TODO: Threads, use different gpu. consumer-producer list to compile.
+# TODO: Need to be put in the thread, hard for the current architecture
 
 # Override the train_batch_sg, train_batch_cbow, to make it use the train_xx_pair functions defined here.
 # Plain Python. Cython ones in the future.
@@ -46,6 +48,56 @@ logging.basicConfig(filename='example.log',level=logging.DEBUG)
 FAST_VERSION = -1
 MAX_WORDS_IN_BATCH = 10000
 
+_l1 = Tensor.dvector("_l1")
+_syn1 = Tensor.dmatrix("_syn1")
+_w_code = Tensor.dvector("_w_code")
+_alpha = Tensor.dscalar("_alpha")
+d_12a = Tensor.dot(_l1, _syn1.T)
+fa = Tensor.nnet.sigmoid(d_12a)
+ga = (1 - _w_code - fa) * _alpha
+u_syn1 = Tensor.outer(ga, _l1)
+update_syn1 = theano.function(inputs=[_l1, _syn1, _w_code, _alpha],
+                              outputs=u_syn1)
+
+_lam = Tensor.dscalar("lam")
+_F_syn1 = Tensor.dmatrix("_F_syn1")
+_star_syn1 = Tensor.matrix("_star_syn1")
+u_syn1_fisher_post = 0 - _alpha * _lam * Tensor.outer(_F_syn1,
+                                                      (_syn1 - _star_syn1))
+update_syn1_fisher_post = theano.function(inputs=[_syn1, _alpha, _lam,
+                                                  _F_syn1, _star_syn1],
+                                          outputs=u_syn1_fisher_post)
+
+u_neu1e_hs = Tensor.dot(ga, _syn1)
+update_neu1e_hs = theano.function(inputs=[_l1, _syn1, _w_code, _alpha],
+                                  outputs=u_neu1e_hs)
+
+_neg_labels = Tensor.dvector("_neg_labels")
+gb = (_neg_labels - fa) * _alpha
+u_syn1_neg = Tensor.outer(gb, _l1)
+update_syn1_neg = theano.function(inputs=[_l1, _syn1, _neg_labels, _alpha],
+                                  outputs=u_syn1_neg)
+
+u_neu1e_ns = Tensor.dot(gb, _syn1)
+update_neu1e_ns = theano.function(inputs=[_l1, _syn1, _neg_labels, _alpha],
+                                  outputs=u_neu1e_ns)
+
+_star_l1 = Tensor.dvector("_star_l1")
+_lock_factor = Tensor.dscalar("_lock_factor")
+_neu1e = Tensor.dvector("_neu1e")
+_F_syn0 = Tensor.dvector("_F_syn0")
+u_syn0_fisher = _lock_factor * \
+                (_neu1e - _alpha * _lam * Tensor.outer(_F_syn0, (_l1 - _star_l1)))
+update_syn0_fisher = theano.function(inputs=[_l1, _star_l1, _F_syn0,
+                                             _neu1e, _alpha, _lam,
+                                             _lock_factor],
+                                     outputs=u_syn0_fisher)
+u_syn0 = _neu1e * _lock_factor
+update_syn0 = theano.function(inputs=[_neu1e, _lock_factor],
+                              outputs=u_syn0)
+
+
+# TODO: theano functions for fisher information
 
 def train_batch_sg(model, sentences, alpha, work=None):
     """
@@ -60,8 +112,13 @@ def train_batch_sg(model, sentences, alpha, work=None):
     """
     result = 0
     for sentence in sentences:
+        # time1 = clock()
         word_vocabs = [model.wv.vocab[w] for w in sentence if w in model.wv.vocab and
                        model.wv.vocab[w].sample_int > model.random.rand() * 2 ** 32]
+        # time2 = clock()
+        # logger.info("time cost for find word vectors: {t}. Totally: {num}".format(t=(time2-time1),num=len(word_vocabs)))
+        # time1 = clock()
+        # logger.info("start to train batch")
         for pos, word in enumerate(word_vocabs):
             reduced_window = model.random.randint(model.window)  # `b` in the original word2vec code
 
@@ -70,7 +127,12 @@ def train_batch_sg(model, sentences, alpha, work=None):
             for pos2, word2 in enumerate(word_vocabs[start:(pos + model.window + 1 - reduced_window)], start):
                 # don't train on the `word` itself
                 if pos2 != pos:
+                    # time1 = clock()
                     train_sg_pair(model, model.wv.index2word[word.index], word2.index, alpha)
+                    # time2 = clock()
+                    # logger.info("time cost for train pair: {t}".format(t=(time2-time1)))
+        # time2 = clock()
+        # logger.info("time cost for train batch: {t}".format(t=(time2 - time1)))
         result += len(word_vocabs)
     return result
 
@@ -124,16 +186,22 @@ def train_sg_pair(model, word, context_index, alpha, learn_vectors=True, learn_h
     if model.hs:
         # work on the entire tree at once, to push as much work into numpy's C routines as possible (performance)
         l2a = deepcopy(model.syn1[predict_word.point])  # 2d matrix, codelen x layer1_size
-        fa = expit(dot(l1, l2a.T))  # propagate hidden -> output
-        ga = (1 - predict_word.code - fa) * alpha  # vector of error gradients multiplied by the learning rate
+        # fa = expit(dot(l1, l2a.T))  # propagate hidden -> output
+        # ga = (1 - predict_word.code - fa) * alpha  # vector of error gradients multiplied by the learning rate
         if learn_hidden:
-            model.syn1[predict_word.point] += outer(ga, l1)  # learn hidden -> output
+            model.syn1[predict_word.point] += update_syn1(l1, l2a, predict_word.code,
+                                                          alpha)  # learn hidden -> output
             if model.fisher_syn1 is not None:
                 # logger.info ("add ewc gradient for syn1")
-                model.syn1[predict_word.point] += float(0) - \
-                                                  alpha * model.lam * outer(model.fisher_syn1[predict_word.point],
-                                                                            (l2a - model.star_syn1[predict_word.point]))
-        neu1e += dot(ga, l2a)  # save error
+                # model.syn1[predict_word.point] += float(0) - \
+                #                                   alpha * model.lam * outer(model.fisher_syn1[predict_word.point],
+                #                                                             (l2a - model.star_syn1[predict_word.point]))
+                model.syn1[predict_word.point] += \
+                    update_syn1_fisher_post(l2a, alpha, model.lam,
+                                            model.fisher_syn1[predict_word.point],
+                                            model.star_syn1[predict_word.point])
+        # neu1e += dot(ga, l2a)  # save error
+        neu1e += update_neu1e_hs(l1, l2a, predict_word.code, alpha)
 
     if model.negative:
         # use this word (label = 1) + `negative` other random words not from this sentence (label = 0)
@@ -143,26 +211,36 @@ def train_sg_pair(model, word, context_index, alpha, learn_vectors=True, learn_h
             if w != predict_word.index:
                 word_indices.append(w)
         l2b = model.syn1neg[word_indices]  # 2d matrix, k+1 x layer1_size
-        fb = expit(dot(l1, l2b.T))  # propagate hidden -> output
-        gb = (model.neg_labels - fb) * alpha  # vector of error gradients multiplied by the learning rate
+        # fb = expit(dot(l1, l2b.T))  # propagate hidden -> output
+        # gb = (model.neg_labels - fb) * alpha  # vector of error gradients multiplied by the learning rate
         if learn_hidden:
-            model.syn1neg[word_indices] += outer(gb, l1)  # learn hidden -> output
+            # model.syn1neg[word_indices] += outer(gb, l1)  # learn hidden -> output
+            model.syn1neg[word_indices] += update_syn1_neg(l1, l2b, model.neg_labels,
+                                                           alpha)
             if model.fisher_syn1neg is not None:
                 # logger.info ("add ewc gradient for syn1neg")
-                model.syn1neg[word_indices] += float(0) - \
-                                               alpha * model.lam * outer(model.fisher_syn1neg[word_indices],
-                                                                         (l2b - model.star_syn1neg[word_indices]))
-        neu1e += dot(gb, l2b)  # save error
+                # model.syn1neg[word_indices] += float(0) - \
+                #                                alpha * model.lam * outer(model.fisher_syn1neg[word_indices],
+                #                                                          (l2b - model.star_syn1neg[word_indices]))
+                model.syn1neg[word_indices] += \
+                    update_syn1_fisher_post(l2b, alpha, model.lam,
+                                            model.fisher_syn1neg[word_indices],
+                                            model.star_syn1neg[word_indices])
+        # neu1e += dot(gb, l2b)  # save error
+        neu1e += update_neu1e_ns(l1, l2b, model.neg_labels, alpha)
 
     if learn_vectors:
         if model.fisher_syn0 is not None:
             # logger.info ("add ewc gradient for syn0")
             star_l1 = model.star_syn0[context_index]
-            l1 += lock_factor * \
-                  (neu1e - alpha * model.lam * outer(model.fisher_syn0[context_index],
-                                                     (l1 - star_l1)))
+            # l1 += lock_factor * \
+            #       (neu1e - alpha * model.lam * outer(model.fisher_syn0[context_index],
+            #                                          (l1 - star_l1)))
+            l1 += update_syn0_fisher(l1, star_l1, model.fisher_syn0[context_index],
+                                     neu1e, alpha, model.lam, lock_factor)
         else:
-            l1 += neu1e * lock_factor  # learn input -> hidden (mutates model.wv.syn0[word2.index], if that is l1)
+            # l1 += neu1e * lock_factor  # learn input -> hidden (mutates model.wv.syn0[word2.index], if that is l1)
+            l1 += update_syn0(neu1e, lock_factor)
     return neu1e
 
 
@@ -172,15 +250,21 @@ def train_cbow_pair(model, word, input_word_indices, l1, alpha, learn_vectors=Tr
     # logging.info("ewc train_cbow_pair")
     if model.hs:
         l2a = model.syn1[word.point]  # 2d matrix, codelen x layer1_size
-        fa = expit(dot(l1, l2a.T))  # propagate hidden -> output
-        ga = (1. - word.code - fa) * alpha  # vector of error gradients multiplied by the learning rate
+        # fa = expit(dot(l1, l2a.T))  # propagate hidden -> output
+        # ga = (1. - word.code - fa) * alpha  # vector of error gradients multiplied by the learning rate
         if learn_hidden:
-            model.syn1[word.point] += outer(ga, l1)  # learn hidden -> output
+            # model.syn1[word.point] += outer(ga, l1)  # learn hidden -> output
+            model.syn1[word.point] += update_syn1(l1, l2a, word.code, alpha)
             if model.fisher_syn1 is not None:
-                model.syn1[word.point] += float(0) - \
-                                          alpha * model.lam * outer(model.fisher_syn1[word.point],
-                                                                    (l2a - model.star_syn1[word.point]))
-        neu1e += dot(ga, l2a)  # save error
+                # model.syn1[word.point] += float(0) - \
+                #                           alpha * model.lam * outer(model.fisher_syn1[word.point],
+                #                                                     (l2a - model.star_syn1[word.point]))
+                model.syn1[word.pint] += \
+                    update_syn1_fisher_post(l2a, alpha, model.lam,
+                                            model.fisher_syn1[word.point],
+                                            model.star_syn1[word.point])
+        # neu1e += dot(ga, l2a)  # save error
+        neu1e += update_neu1e_hs(l1, l2a, word.code, alpha)
 
     if model.negative:
         # use this word (label = 1) + `negative` other random words not from this sentence (label = 0)
@@ -190,15 +274,22 @@ def train_cbow_pair(model, word, input_word_indices, l1, alpha, learn_vectors=Tr
             if w != word.index:
                 word_indices.append(w)
         l2b = model.syn1neg[word_indices]  # 2d matrix, k+1 x layer1_size
-        fb = expit(dot(l1, l2b.T))  # propagate hidden -> output
-        gb = (model.neg_labels - fb) * alpha  # vector of error gradients multiplied by the learning rate
+        # fb = expit(dot(l1, l2b.T))  # propagate hidden -> output
+        # gb = (model.neg_labels - fb) * alpha  # vector of error gradients multiplied by the learning rate
         if learn_hidden:
-            model.syn1neg[word_indices] += outer(gb, l1)  # learn hidden -> output
+            # model.syn1neg[word_indices] += outer(gb, l1)  # learn hidden -> output
+            model.syn1neg[word_indices] += update_syn1_neg(l1, l2b, model.neg_labels,
+                                                           alpha)
             if model.fisher_syn1neg is not None:
-                model.syn1neg[word_indices] += float(0) - \
-                                               alpha * model.lam * outer(model.fisher_syn1neg[word_indices],
-                                                                         (l2b - model.star_syn1neg[word_indices]))
-        neu1e += dot(gb, l2b)  # save error
+                # model.syn1neg[word_indices] += float(0) - \
+                #                                alpha * model.lam * outer(model.fisher_syn1neg[word_indices],
+                #                                                          (l2b - model.star_syn1neg[word_indices]))
+                model.syn1neg[word_indices] += \
+                    update_syn1_fisher_post(l2b, alpha, model.lam,
+                                            model.fisher_syn1neg[word_indices],
+                                            model.star_syn1neg[word_indices])
+        # neu1e += dot(gb, l2b)  # save error
+        neu1e += update_neu1e_ns(l1, l2b, model.neg_labels, alpha)
 
     if learn_vectors:
         # learn input -> hidden, here for all words in the window separately
@@ -206,12 +297,16 @@ def train_cbow_pair(model, word, input_word_indices, l1, alpha, learn_vectors=Tr
             neu1e /= len(input_word_indices)
         if model.fisher_syn0 is not None:
             for i in input_word_indices:
-                model.wv.syn0[i] += model.syn0_lockf[i] * \
-                                    (neu1e - alpha * model.lam * outer(model.fisher_syn0[i],
-                                                                       (model.wv.syn0[i] - model.star_syn0[i])))
+                # model.wv.syn0[i] += model.syn0_lockf[i] * \
+                #                     (neu1e - alpha * model.lam * outer(model.fisher_syn0[i],
+                #                                                        (model.wv.syn0[i] - model.star_syn0[i])))
+                model.wv.syn0[i] += update_syn0_fisher(model.wv.syn0[i], model.star_syn0[i], model.fisher_syn0[i],
+                                                       neu1e, alpha, model.lam,
+                                                       model.syn0_lockf[i])
         else:
             for i in input_word_indices:
-                model.wv.syn0[i] += neu1e * model.syn0_lockf[i]
+                # model.wv.syn0[i] += neu1e * model.syn0_lockf[i]
+                model.wv.syn0[i] += update_syn0(neu1e, model.syn0_lockf[i])
 
     return neu1e
 
@@ -282,7 +377,7 @@ def fisher_sg_pair(model, word, context_index, learn_vectors=True, learn_hidden=
         fa = expit(dot(l1, l2a.T))  # propagate hidden -> output
         ga = (1 - predict_word.code - fa)  # vector of error gradients multiplied by the learning rate
         if learn_hidden:
-            model.fisher_syn1[predict_word.point] += (outer(ga, l1))**2  # accumulate fisher info
+            model.fisher_syn1[predict_word.point] += (outer(ga, l1)) ** 2  # accumulate fisher info
         neu1e += dot(ga, l2a)  # save error
 
     if model.negative:
@@ -296,10 +391,10 @@ def fisher_sg_pair(model, word, context_index, learn_vectors=True, learn_hidden=
         fb = expit(dot(l1, l2b.T))  # propagate hidden -> output
         gb = (model.neg_labels - fb)  # vector of error gradients multiplied by the learning rate
         if learn_hidden:
-            model.fisher_syn1neg[word_indices] += outer(gb, l1)**2  # accumulate fisher info
+            model.fisher_syn1neg[word_indices] += outer(gb, l1) ** 2  # accumulate fisher info
         neu1e += dot(gb, l2b)  # save error
 
-    model.fisher_syn0[context_index] += neu1e**2
+    model.fisher_syn0[context_index] += neu1e ** 2
     accum_count += 1
 
     return accum_count
@@ -307,8 +402,8 @@ def fisher_sg_pair(model, word, context_index, learn_vectors=True, learn_hidden=
 
 def fisher_cbow_pair(model, word, input_word_indices, l1, learn_vectors=True, learn_hidden=True):
     neu1e = zeros(l1.shape)
-    # TODO: accumulate fisher information
-    # TODO: remember to report accumulate times
+    # accumulate fisher information
+    # remember to report accumulate times
     # I do not use lock here for fisher info, hope it is ok
     accum_count = 0
 
@@ -319,7 +414,7 @@ def fisher_cbow_pair(model, word, input_word_indices, l1, learn_vectors=True, le
         fa = expit(dot(l1, l2a.T))  # propagate hidden -> output
         ga = (1. - word.code - fa)  # vector of error gradients multiplied by the learning rate
         if learn_hidden:
-            model.fisher_syn1[word.point] += outer(ga, l1)**2  # learn hidden -> output
+            model.fisher_syn1[word.point] += outer(ga, l1) ** 2  # learn hidden -> output
         neu1e += dot(ga, l2a)  # save error
 
     if model.negative:
@@ -333,7 +428,7 @@ def fisher_cbow_pair(model, word, input_word_indices, l1, learn_vectors=True, le
         fb = expit(dot(l1, l2b.T))  # propagate hidden -> output
         gb = (model.neg_labels - fb)  # vector of error gradients multiplied by the learning rate
         if learn_hidden:
-            model.fisher_syn1neg[word_indices] += outer(gb, l1)**2  # learn hidden -> output
+            model.fisher_syn1neg[word_indices] += outer(gb, l1) ** 2  # learn hidden -> output
         neu1e += dot(gb, l2b)  # save error
 
     if learn_vectors:
@@ -341,7 +436,7 @@ def fisher_cbow_pair(model, word, input_word_indices, l1, learn_vectors=True, le
         if not model.cbow_mean and input_word_indices:
             neu1e /= len(input_word_indices)
         for i in input_word_indices:
-            model.fisher_syn0[i] += (neu1e**2)
+            model.fisher_syn0[i] += (neu1e ** 2)
     accum_count += 1
 
     return accum_count
@@ -418,7 +513,8 @@ class EwcWord2vec(Word2Vec):
                 "Instead start with a blank model, scan_vocab on the new corpus, intersect_word2vec_format with the old model, then train.")
 
         if total_words is None and total_examples is None:
-            raise ValueError("You must specify either total_examples or total_words, for proper alpha and progress calculations. The usual value is total_examples=model.corpus_count.")
+            raise ValueError(
+                "You must specify either total_examples or total_words, for proper alpha and progress calculations. The usual value is total_examples=model.corpus_count.")
         if epochs is None:
             raise ValueError("You must specify an explict epochs count. The usual value is epochs=model.iter.")
         start_alpha = start_alpha or self.alpha
